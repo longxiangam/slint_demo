@@ -1,0 +1,22 @@
+1、在pc 模拟下 要关掉 config.toml 中的 build-std 不然无法启动。
+
+2、config.toml rustflags 下有如果部分，是关于原子操作的，加上会无法编译通过。
+
+  # comment the cfgs below if you do _not_ wish to emulate atomics.
+  # enable the atomic codegen option for RISCV
+  "-C", "target-feature=+a",
+  # tell the core library have atomics even though it's not specified in the target definition
+  "--cfg", "target_has_atomic_load_store",
+  "--cfg", 'target_has_atomic_load_store="8"',
+  "--cfg", 'target_has_atomic_load_store="16"',
+  "--cfg", 'target_has_atomic_load_store="32"',
+  "--cfg", 'target_has_atomic_load_store="ptr"',
+  # enable cas
+  "--cfg", "target_has_atomic",
+  "--cfg", 'target_has_atomic="8"',
+  "--cfg", 'target_has_atomic="16"',
+  "--cfg", 'target_has_atomic="32"',
+  "--cfg", 'target_has_atomic="ptr"',
+
+
+ 3、 esp32c3-hal 最新版本与 0.9 的声明结构有差异，现有代码直接使用最新版本会报错。

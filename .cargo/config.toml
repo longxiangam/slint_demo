@@ -1,0 +1,32 @@
+[source.crates-io]
+registry = "https://github.com/rust-lang/crates.io-index"
+replace-with = 'ustc'
+
+[source.ustc]
+registry = "git://mirrors.ustc.edu.cn/crates.io-index"
+#registry = "https://mirrors.ustc.edu.cn/crates.io-index"
+
+[http]
+#check-revoke = false
+
+[target.riscv32imc-unknown-none-elf]
+runner = "espflash flash --monitor -p COM8"
+
+[build]
+rustflags = [
+  "-C", "link-arg=-Tlinkall.x",
+  "-C", "link-arg=-Trom-functions.x",
+  # Required to obtain backtraces (e.g. when using the "esp-backtrace" crate.)
+  # NOTE: May negatively impact performance of produced code
+  "-C", "force-frame-pointers",
+
+  # comment the cfgs below if you do _not_ wish to emulate atomics.
+  # enable the atomic codegen option for RISCV
+  "-C", "target-feature=+a",
+
+]
+
+target = "riscv32imc-unknown-none-elf"
+
+[unstable]
+build-std = ["core", "alloc"]
