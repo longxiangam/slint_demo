@@ -23,11 +23,9 @@ fn create_slint_app() -> AppWindow {
 fn main() -> Result<(), slint::PlatformError> {
     create_slint_app().run()
 }
-
 #[cfg(not(feature = "simulator"))]
 #[entry]
 fn main() -> !{
-
     use esp_backtrace as _;
     use esp_println::println;
     use hal::{clock::ClockControl, peripherals::Peripherals, prelude::*, timer::TimerGroup, Rtc, IO, gpio::{Gpio0, Input, PullDown}, Delay, esp_riscv_rt, interrupt, peripherals, riscv};
@@ -51,14 +49,12 @@ fn main() -> !{
     let mut rtc = Rtc::new(peripherals.RTC_CNTL);
     let timer_group0 = TimerGroup::new(
         peripherals.TIMG0,
-        &clocks,
-        &mut system.peripheral_clock_control,
+        &clocks
     );
     let mut wdt0 = timer_group0.wdt;
     let timer_group1 = TimerGroup::new(
         peripherals.TIMG1,
-        &clocks,
-        &mut system.peripheral_clock_control,
+        &clocks
     );
     let mut wdt1 = timer_group1.wdt;
     rtc.swd.disable();
