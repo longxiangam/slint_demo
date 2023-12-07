@@ -11,14 +11,16 @@ use embedded_graphics::text::Text;
 use embedded_graphics_core::draw_target::DrawTarget;
 use embedded_graphics_core::Drawable;
 use embedded_graphics_core::geometry::Point;
-use embedded_graphics_core::pixelcolor::Rgb565;
+use embedded_graphics_core::pixelcolor::{BinaryColor, Rgb565};
 use embedded_graphics_core::prelude::RgbColor;
+use epd_waveshare::epd2in9::{Display2in9, Epd2in9};
+use epd_waveshare::prelude::{Display, DisplayRotation, WaveshareDisplay};
 use fugit::HertzU32;
 #[cfg(not(feature = "simulator"))]
 use hal::entry;
 use hal::systimer::SystemTimer;
 use slint::platform::Platform;
-use slint::platform::software_renderer::MinimalSoftwareWindow;
+use slint::platform::software_renderer::{MinimalSoftwareWindow, PremultipliedRgbaColor, TargetPixel};
 
 slint::include_modules!();
 
@@ -45,7 +47,7 @@ fn create_slint_app() -> AppWindow {
 fn main() -> Result<(), slint::PlatformError> {
     create_slint_app().run()
 }
-#[cfg(not(feature = "simulator"))]
+#[cfg(feature = "lcd")]
 #[entry]
 fn main() -> !{
 
@@ -184,6 +186,93 @@ fn main() -> !{
     }
 }
 
+#[cfg(feature = "epd")]
+#[entry]
+fn main() -> !{
+
+    // -------- Setup Allocator --------
+    const HEAP_SIZE: usize = 200 * 1024;
+    static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+    #[global_allocator]
+    static ALLOCATOR: embedded_alloc::Heap = embedded_alloc::Heap::empty();
+    unsafe { ALLOCATOR.init(&mut HEAP as *const u8 as usize, core::mem::size_of_val(&HEAP)) };
+
+
+    println!("Hello, world!");
+    let peripherals = Peripherals::take();
+    let mut system = peripherals.SYSTEM.split();
+    let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
+    // Disable the RTC and TIMG watchdog timers
+    let mut rtc = Rtc::new(peripherals.RTC_CNTL);
+    let timer_group0 = TimerGroup::new(
+        peripherals.TIMG0,
+        &clocks
+    );
+    let mut wdt0 = timer_group0.wdt;
+    let timer_group1 = TimerGroup::new(
+        peripherals.TIMG1,
+        &clocks
+    );
+    let mut wdt1 = timer_group1.wdt;
+    rtc.swd.disable();
+    rtc.rwdt.disable();
+    wdt0.disable();
+    wdt1.disable();
+
+    let mut delay = Delay::new(&clocks);
+    let io = IO::new(peripherals.GPIO,peripherals.IO_MUX);
+
+
+    //墨水屏
+    let epd_sclk = io.pins.gpio2;
+    let epd_mosi = io.pins.gpio3;
+    let epd_cs = io.pins.gpio7.into_push_pull_output();
+    let epd_rst =io.pins.gpio10.into_push_pull_output();
+    let epd_dc = io.pins.gpio6.into_push_pull_output();
+    let mut spi = hal::spi::master::Spi::new_no_cs_no_miso(
+        peripherals.SPI2,
+        epd_sclk,
+        epd_mosi,
+        32u32.MHz(),
+        hal::spi::SpiMode::Mode0,
+        &clocks,
+    );
+    let busy_in = io.pins.gpio11.into_pull_up_input();
+
+    let mut epd = Epd2in9::new(&mut spi, epd_cs, busy_in, epd_dc, epd_rst, &mut delay).unwrap();
+
+    let window = slint::platform::software_renderer::MinimalSoftwareWindow::new(Default::default());
+    slint::platform::set_platform(alloc::boxed::Box::new(MyPlatform {
+        window: window.clone()
+    })) .unwrap();
+
+    let _ui = create_slint_app();
+
+    const DISPLAY_WIDTH:usize = 128;
+    const DISPLAY_HEIGHT:usize = 296;
+
+    let mut buffer = [WBPixel(BinaryColor::Off); DISPLAY_WIDTH * DISPLAY_HEIGHT];
+
+    loop{
+        slint::platform::update_timers_and_animations();
+
+        window.draw_if_needed(|renderer| {
+            use embedded_graphics_core::prelude::*;
+            renderer.render(&mut buffer, DISPLAY_WIDTH );
+
+            let mut display = Display2in9::default();
+            println!("Drawing rotated text...");
+            display.set_rotation(DisplayRotation::Rotate270);
+
+
+            let _= epd.clear_frame(&mut spi, &mut delay);
+
+            let _= epd.update_frame(&mut spi, &display.buffer(), &mut delay);
+            let _= epd.display_frame(&mut spi, &mut delay);
+            let _= epd.sleep(&mut spi, &mut delay);
+        });
+    }
+}
 struct MyPlatform  {
     window: Rc<MinimalSoftwareWindow>,
 
@@ -202,5 +291,38 @@ impl Platform  for MyPlatform {
     // optional: You can put the event loop there, or in the main function, see later
     fn run_event_loop(&self) -> Result<(), slint::PlatformError> {
         todo!();
+    }
+}
+
+
+/// A 16bit pixel that has 5 red bits, 6 green bits and  5 blue bits
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub struct WBPixel(pub BinaryColor);
+
+impl WBPixel {
+
+}
+
+impl TargetPixel for WBPixel {
+    fn blend(&mut self, color: PremultipliedRgbaColor) {
+        let a = (u8::MAX - color.alpha) as u32;
+        // convert to 5 bits
+        let a = (a + 4) >> 3;
+
+        if color.red > 0 || color.blue > 0 || color.green > 0 {
+            self.0 = BinaryColor::On;
+        }else {
+            self.0 = BinaryColor::Off;
+        }
+
+    }
+
+    fn from_rgb(r: u8, g: u8, b: u8) -> Self {
+        if r > 0 || b > 0 || g > 0 {
+            WBPixel(BinaryColor::On)
+        }else {
+            WBPixel( BinaryColor::Off)
+        }
     }
 }
