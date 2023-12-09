@@ -3,6 +3,7 @@
 extern crate alloc;
 
 use alloc::rc::Rc;
+use core::cell::RefCell;
 use embedded_graphics::image::{Image, ImageRaw, ImageRawLE};
 use embedded_graphics::mono_font::ascii::FONT_6X9;
 use embedded_graphics::mono_font::MonoTextStyle;
@@ -26,10 +27,12 @@ slint::include_modules!();
 
 use esp_backtrace as _;
 use esp_println::println;
-use hal::{clock::ClockControl, peripherals::Peripherals, prelude::*, timer::TimerGroup, Rtc, IO, gpio::{Gpio0, Input, PullDown}, Delay, esp_riscv_rt, interrupt, peripherals, riscv};
+use hal::{clock::ClockControl, peripherals::Peripherals, prelude::*, timer::TimerGroup, Rtc, IO, gpio::{Gpio0, Input, PullDown}, Delay, esp_riscv_rt, interrupt, peripherals, riscv, gpio};
 use fugit::RateExtU32;
 use slint::platform::WindowEvent;
-use hal::gpio::Unknown;
+use hal::gpio::{Event, Gpio1, GpioPin, GpioProperties, InterruptStatusRegisterAccess, Unknown};
+use hal::riscv::_export::critical_section;
+use hal::riscv::_export::critical_section::Mutex;
 use st7735_lcd::Orientation;
 
 fn create_slint_app() -> AppWindow {
@@ -42,6 +45,52 @@ fn create_slint_app() -> AppWindow {
     });
     ui
 }
+static BUTTON: Mutex<RefCell<Option<Gpio0<Input<PullDown>>>>> = Mutex::new(RefCell::new(None));
+static BUTTON1: Mutex<RefCell<Option<Gpio1<Input<PullDown>>>>> = Mutex::new(RefCell::new(None));
+
+#[interrupt]
+fn GPIO(context: &mut esp_riscv_rt::TrapFrame) {
+    critical_section::with(|cs| {
+        println!("GPIO interrupt");
+        println!("{:?}",context);
+
+        let gpio0_status = <Gpio0<Input<PullDown>>  as GpioProperties>::InterruptStatus::app_cpu_interrupt_status_read();
+        println!("GPIO0 status{}",gpio0_status);
+
+
+        let  button_is_high =  BUTTON
+            .borrow_ref_mut(cs)
+            .as_mut()
+            .unwrap()
+            .is_input_high();
+
+        let  button1_is_high =  BUTTON1
+            .borrow_ref_mut(cs)
+            .as_mut()
+            .unwrap()
+            .is_input_high();
+
+        if(gpio0_status == 1){
+            println!("按钮0 按下");
+        }
+
+        if(gpio0_status == 2){
+            println!("按钮1 按下");
+        }
+        BUTTON
+            .borrow_ref_mut(cs)
+            .as_mut()
+            .unwrap()
+            .clear_interrupt();
+
+        BUTTON1
+            .borrow_ref_mut(cs)
+            .as_mut()
+            .unwrap()
+            .clear_interrupt();
+
+    });
+}
 
 #[cfg(feature = "simulator")]
 fn main() -> Result<(), slint::PlatformError> {
@@ -53,14 +102,14 @@ fn main() -> !{
 
 
     // -------- Setup Allocator --------
-    const HEAP_SIZE: usize = 200 * 1024;
+    const HEAP_SIZE: usize = 300 * 1024;
     static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
     #[global_allocator]
     static ALLOCATOR: embedded_alloc::Heap = embedded_alloc::Heap::empty();
     unsafe { ALLOCATOR.init(&mut HEAP as *const u8 as usize, core::mem::size_of_val(&HEAP)) };
 
 
-    println!("Hello, world!");
+    println!("进入系统 !");
     let peripherals = Peripherals::take();
     let mut system = peripherals.SYSTEM.split();
     let clocks = ClockControl::boot_defaults(system.clock_control).freeze();
@@ -81,8 +130,30 @@ fn main() -> !{
     wdt0.disable();
     wdt1.disable();
 
-    let mut delay = Delay::new(&clocks);
+    //按钮事件
+    // Set GPIO0 as an input
     let io = IO::new(peripherals.GPIO,peripherals.IO_MUX);
+    let mut button = io.pins.gpio0.into_pull_down_input();
+    button.listen(Event::FallingEdge);
+
+    critical_section::with(|cs| BUTTON.borrow_ref_mut(cs).replace(button));
+
+    interrupt::enable(peripherals::Interrupt::GPIO, interrupt::Priority::Priority3).unwrap();
+
+    let mut button1 = io.pins.gpio1.into_pull_down_input();
+    button1.listen(Event::FallingEdge);
+
+    critical_section::with(|cs| BUTTON1.borrow_ref_mut(cs).replace(button1));
+
+    interrupt::enable(peripherals::Interrupt::GPIO, interrupt::Priority::Priority3).unwrap();
+
+    unsafe {
+        riscv::interrupt::enable();
+    }
+
+
+    let mut delay = Delay::new(&clocks);
+
 
 
     let sclk = io.pins.gpio2;
@@ -106,21 +177,23 @@ fn main() -> !{
 
     let rgb = true;
     let inverted = false;
-    let width = 128;
-    let height = 160;
+    const WIDTH:u32 = 128;
+    const HEIGHT:u32 = 160;
 
-    let mut display = st7735_lcd::ST7735::new(spi, dc, rst, rgb, inverted, width, height);
+    let mut display = st7735_lcd::ST7735::new(spi, dc, rst, rgb, inverted, WIDTH, HEIGHT);
     display.init(&mut delay).unwrap();
     display.clear( Rgb565::BLACK).unwrap();
     display
         .set_orientation(&Orientation::Portrait)
         .unwrap();
     display.set_offset(0, 0);
-    let yoffset = 100;
-    let image_raw: ImageRawLE<Rgb565> =
+
+    let mut buffer = [slint::platform::software_renderer::Rgb565Pixel(0);(WIDTH * HEIGHT) as usize];
+
+   /* let image_raw: ImageRawLE<Rgb565> =
         ImageRaw::new(include_bytes!("../assets/ferris.raw"), 86);
     let image = Image::new(&image_raw, Point::new(26, 8));
-    image.draw(&mut display).unwrap();
+    image.draw(&mut display).unwrap();*/
   /*  let thin_stroke = PrimitiveStyle::with_stroke(Rgb565::WHITE, 1);
     Triangle::new(
         Point::new(16, 16 + yoffset),
@@ -181,7 +254,19 @@ fn main() -> !{
                         .unwrap();
                 }
             }
-            renderer.render_by_line(DisplayWrapper(&mut display, &mut line));
+            //一行行的绘制，ram占用较小，速度慢
+            //renderer.render_by_line(DisplayWrapper(&mut display, &mut line));
+            //一次性绘制，ram占用较大，速度快
+            renderer.render(&mut  buffer,WIDTH as usize);
+            println!("renderer",);
+
+            display.set_pixels_buffered(0,
+                                        0,
+                                        WIDTH as u16 - 1,
+                                        HEIGHT as u16 - 1,buffer.iter().map(|p|{
+                p.0
+            })).unwrap();
+
         });
     }
 }
