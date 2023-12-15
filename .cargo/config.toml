@@ -10,7 +10,7 @@ registry = "git://mirrors.ustc.edu.cn/crates.io-index"
 #check-revoke = false
 
 [target.riscv32imc-unknown-none-elf]
-runner = "espflash flash --monitor -p COM8"
+runner = "espflash flash --monitor -p COM7"
 
 [build]
 rustflags = [
